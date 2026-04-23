@@ -1,0 +1,94 @@
+substitutions:
+  device_name: osgp-meter
+  friendly_name: OSGP Meter
+  osgp_user_id: "1"
+  osgp_username: "esphome"
+  osgp_password: !secret osgp_password
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+
+esp32:
+  variant: ESP32C3
+  framework:
+    type: arduino
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+api:
+
+ota:
+  - platform: esphome
+
+external_components:
+  - source: github://hendrikb/esphome-osgp-meter@main
+    components: [osgp_meter]
+
+logger:
+  level: INFO
+  baud_rate: 0
+
+uart:
+  - id: meter_uart
+    tx_pin: GPIO1
+    rx_pin: GPIO3
+    baud_rate: 9600
+    data_bits: 8
+    parity: NONE
+    stop_bits: 1
+
+sensor:
+  - platform: osgp_meter
+    uart_id: meter_uart
+    user_id: ${osgp_user_id}
+    username: ${osgp_username}
+    password: ${osgp_password}
+    refresh_interval: 5s
+    logoff_interval: 540s
+    static_info_interval: 1h
+    poll_jitter: 200ms
+    health_log_interval: 60s
+    log_raw: false
+    fwd_active_energy:
+      name: "${friendly_name} Forward Active Energy"
+    rev_active_energy:
+      name: "${friendly_name} Reverse Active Energy"
+    tou_tier1_fwd_active_energy:
+      name: "${friendly_name} Tier 1 Forward Active Energy"
+    tou_tier2_fwd_active_energy:
+      name: "${friendly_name} Tier 2 Forward Active Energy"
+    manufacturer:
+      name: "${friendly_name} Manufacturer"
+    model:
+      name: "${friendly_name} Model"
+    firmware_version:
+      name: "${friendly_name} Firmware Version"
+    utility_serial:
+      name: "${friendly_name} Utility Serial"
+    fwd_active_power:
+      name: "${friendly_name} Forward Active Power"
+    rev_active_power:
+      name: "${friendly_name} Reverse Active Power"
+    l1_current:
+      name: "${friendly_name} L1 Current"
+    l2_current:
+      name: "${friendly_name} L2 Current"
+    l3_current:
+      name: "${friendly_name} L3 Current"
+    l1_voltage:
+      name: "${friendly_name} L1 Voltage"
+    l2_voltage:
+      name: "${friendly_name} L2 Voltage"
+    l3_voltage:
+      name: "${friendly_name} L3 Voltage"
+    frequency:
+      name: "${friendly_name} Frequency"
+    unknown_sequence_count:
+      name: "${friendly_name} Unknown Sequence Count"
+    unknown_sequence_last:
+      name: "${friendly_name} Unknown Sequence Last"
+    reset_reason:
+      name: "${friendly_name} Reset Reason"
