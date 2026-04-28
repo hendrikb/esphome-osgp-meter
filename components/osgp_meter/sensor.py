@@ -22,6 +22,8 @@ from esphome.const import (
 
 from . import OSGPMeter
 
+DEPENDENCIES = ["uart"]
+
 CONF_USER_ID = "user_id"
 CONF_REFRESH_INTERVAL = "refresh_interval"
 CONF_LOGOFF_INTERVAL = "logoff_interval"
@@ -67,6 +69,24 @@ CONF_UNKNOWN_RESPONSE_COUNT = "unknown_response_count"
 CONF_UNKNOWN_SEQUENCE_COUNT = "unknown_sequence_count"
 CONF_UNKNOWN_SEQUENCE_LAST = "unknown_sequence_last"
 CONF_RESET_REASON = "reset_reason"
+
+TEXT_SENSOR_KEYS = (
+    CONF_MANUFACTURER,
+    CONF_MODEL,
+    CONF_HARDWARE_VERSION,
+    CONF_FIRMWARE_VERSION,
+    CONF_MANUFACTURER_SERIAL,
+    CONF_UTILITY_SERIAL,
+    CONF_UNKNOWN_SEQUENCE_LAST,
+    CONF_RESET_REASON,
+)
+
+
+def AUTO_LOAD(config):
+    if any(key in config for key in TEXT_SENSOR_KEYS):
+        return ["text_sensor"]
+    return []
+
 
 SENSOR_SCHEMA_ENERGY = sensor.sensor_schema(
     unit_of_measurement=UNIT_KILOWATT_HOURS,
