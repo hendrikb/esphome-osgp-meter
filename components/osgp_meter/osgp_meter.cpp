@@ -102,6 +102,7 @@ void OSGPMeter::setup() {
 
   this->session_state_ = SessionState::INIT_WAIT;
   this->poll_due_ = true;
+  this->next_mbus_update_ms_ = 10000;
   this->next_action_ms_ = 0;
   this->wakeup_remaining_ = 0;
   this->reset_rx_parser_();
@@ -134,6 +135,12 @@ void OSGPMeter::dump_config() {
   ESP_LOGCONFIG(TAG, "  Poll jitter: %lu ms", static_cast<unsigned long>(this->poll_jitter_ms_));
   ESP_LOGCONFIG(TAG, "  Health log interval: %lu ms", static_cast<unsigned long>(this->health_log_interval_ms_));
   ESP_LOGCONFIG(TAG, "  Raw frame logging: %s", this->log_raw_ ? "true" : "false");
+  if (!this->mbus_devices_.empty()) {
+    ESP_LOGCONFIG(TAG, "  M-Bus devices: %u", static_cast<unsigned>(this->mbus_devices_.size()));
+    ESP_LOGCONFIG(TAG, "  M-Bus update interval: %lu ms",
+                  static_cast<unsigned long>(this->mbus_update_interval_ms_));
+    ESP_LOGCONFIG(TAG, "  M-Bus record dump: %s", this->mbus_dump_records_ ? "true" : "false");
+  }
 }
 
 void OSGPMeter::set_refresh_interval(uint32_t interval_ms) {
@@ -231,7 +238,8 @@ void OSGPMeter::reset_rx_parser_() {
   this->rx_expected_length_ = 0;
 }
 
-bool OSGPMeter::begin_request_(const uint8_t *payload, size_t length, bool hide_contents, const char *name) {
+bool OSGPMeter::begin_request_(const uint8_t *payload, size_t length, bool hide_contents, const char *name,
+                               bool warn_on_failure) {
   if (this->request_active_) {
     return false;
   }
@@ -239,6 +247,7 @@ bool OSGPMeter::begin_request_(const uint8_t *payload, size_t length, bool hide_
   this->request_payload_buffer_.assign(payload, payload + length);
   this->request_name_ = name;
   this->request_hide_contents_ = hide_contents;
+  this->request_warn_on_failure_ = warn_on_failure;
   this->request_attempts_ = 0;
   this->request_active_ = true;
   this->request_completed_ = false;
@@ -271,9 +280,9 @@ bool OSGPMeter::begin_request_(const uint8_t *payload, size_t length, bool hide_
 }
 
 OSGPMeter::StepResult OSGPMeter::run_request_step_(const uint8_t *payload, size_t length, bool hide_contents,
-                                                   const char *name) {
+                                                   const char *name, bool warn_on_failure) {
   if (!this->request_active_) {
-    this->begin_request_(payload, length, hide_contents, name);
+    this->begin_request_(payload, length, hide_contents, name, warn_on_failure);
     return StepResult::IN_PROGRESS;
   }
   if (!this->request_completed_) {
@@ -332,7 +341,11 @@ void OSGPMeter::fail_request_(const char *reason) {
   this->request_response_buffer_.clear();
   this->rx_contents_buffer_.clear();
   this->reset_rx_parser_();
-  ESP_LOGW(TAG, "%s failed: %s", this->request_name_.c_str(), reason);
+  if (this->request_warn_on_failure_) {
+    ESP_LOGW(TAG, "%s failed: %s", this->request_name_.c_str(), reason);
+  } else {
+    ESP_LOGD(TAG, "%s failed: %s", this->request_name_.c_str(), reason);
+  }
 }
 
 void OSGPMeter::schedule_request_retry_(uint32_t now, const char *reason) {
@@ -854,6 +867,9 @@ void OSGPMeter::process_session_state_(uint32_t now) {
         return;
       }
       if (!this->poll_due_) {
+        if (!this->mbus_devices_.empty() && (this->next_mbus_update_ms_ == 0 || now >= this->next_mbus_update_ms_)) {
+          this->session_state_ = SessionState::MBUS_PREPARE;
+        }
         return;
       }
       this->poll_due_ = false;
@@ -1073,6 +1089,9 @@ void OSGPMeter::process_session_state_(uint32_t now) {
       this->last_success_ms_ = now;
       if (this->tou_tier_block_fallback_needed_ && this->tou_tier_block_count_ > 0) {
         this->session_state_ = SessionState::POLL_READ_TOU_TIER_BLOCK;
+      } else if (!this->mbus_devices_.empty() &&
+                 (this->next_mbus_update_ms_ == 0 || now >= this->next_mbus_update_ms_)) {
+        this->session_state_ = SessionState::MBUS_PREPARE;
       } else if (now - this->last_logon_ms_ + this->refresh_interval_ms_ > this->logoff_interval_ms_) {
         this->session_state_ = SessionState::REQ_LOGOFF;
       } else {
@@ -1084,7 +1103,10 @@ void OSGPMeter::process_session_state_(uint32_t now) {
     case SessionState::POLL_READ_TOU_TIER_BLOCK: {
       if (this->tou_tier_block_index_ >= this->tou_tier_block_count_) {
         this->tou_tier_block_fallback_needed_ = false;
-        if (now - this->last_logon_ms_ + this->refresh_interval_ms_ > this->logoff_interval_ms_) {
+        if (!this->mbus_devices_.empty() &&
+            (this->next_mbus_update_ms_ == 0 || now >= this->next_mbus_update_ms_)) {
+          this->session_state_ = SessionState::MBUS_PREPARE;
+        } else if (now - this->last_logon_ms_ + this->refresh_interval_ms_ > this->logoff_interval_ms_) {
           this->session_state_ = SessionState::REQ_LOGOFF;
         } else {
           this->session_state_ = SessionState::CONNECTED_IDLE;
@@ -1106,7 +1128,7 @@ void OSGPMeter::process_session_state_(uint32_t now) {
           static_cast<uint8_t>(summation_bytes & 0xFF),
       };
 
-      StepResult step = this->run_request_step_(payload, sizeof(payload), false, "ReadTable23TierBlock");
+      StepResult step = this->run_request_step_(payload, sizeof(payload), false, "ReadTable23TierBlock", false);
       if (step == StepResult::IN_PROGRESS) {
         return;
       }
@@ -1116,12 +1138,25 @@ void OSGPMeter::process_session_state_(uint32_t now) {
           this->parse_tou_tier_block_reply_(reader, this->tou_tier_block_index_);
         }
       } else {
-        ESP_LOGW(TAG, "BT23 tier block %u read failed", static_cast<unsigned>(this->tou_tier_block_index_ + 1));
+        ESP_LOGD(TAG, "BT23 tier block %u read failed", static_cast<unsigned>(this->tou_tier_block_index_ + 1));
       }
 
       this->tou_tier_block_index_++;
       return;
     }
+
+    case SessionState::MBUS_PREPARE:
+    case SessionState::MBUS_READ_ET11:
+    case SessionState::MBUS_READ_ET14:
+    case SessionState::MBUS_READ_ET14_ENTRY:
+    case SessionState::MBUS_READ_ET16:
+    case SessionState::MBUS_READ_ET36_COUNT:
+    case SessionState::MBUS_READ_ET36:
+    case SessionState::MBUS_READ_ET45_HEADER:
+    case SessionState::MBUS_READ_ET45_ENTRY:
+    case SessionState::MBUS_READ_ET45_ENTRY_DATA:
+      this->process_mbus_state_(now);
+      return;
 
     case SessionState::REQ_LOGOFF: {
       uint8_t payload[1] = {protocol::REQUEST_ID_LOGOFF};

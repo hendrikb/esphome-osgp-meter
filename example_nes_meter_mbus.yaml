@@ -1,0 +1,96 @@
+substitutions:
+  device_name: osgp-meter
+  friendly_name: OSGP Meter
+  osgp_user_id: "1"
+  osgp_username: "esphome"
+  osgp_password: !secret osgp_password
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+
+esp32:
+  variant: ESP32C3
+  framework:
+    type: arduino
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+api:
+
+ota:
+  - platform: esphome
+
+external_components:
+  - source: github://hendrikb/esphome-osgp-meter@main
+    components: [osgp_meter]
+
+logger:
+  level: INFO
+  baud_rate: 0
+
+uart:
+  - id: meter_uart
+    tx_pin: GPIO1
+    rx_pin: GPIO3
+    baud_rate: 9600
+    data_bits: 8
+    parity: NONE
+    stop_bits: 1
+
+sensor:
+  - platform: osgp_meter
+    uart_id: meter_uart
+    user_id: ${osgp_user_id}
+    username: ${osgp_username}
+    password: ${osgp_password}
+    refresh_interval: 5s
+    logoff_interval: 540s
+    poll_jitter: 200ms
+    log_raw: false
+
+    fwd_active_energy:
+      name: "${friendly_name} Forward Active Energy"
+    rev_active_energy:
+      name: "${friendly_name} Reverse Active Energy"
+    fwd_active_power:
+      name: "${friendly_name} Forward Active Power"
+
+    mbus:
+      update_interval: 60s
+      dump_records: false
+      devices:
+        - serial_number: !secret mbus_water_meter_serial
+          slot: 1
+          medium: water
+          total_volume:
+            name: "Water Consumption"
+          volume_flow_rate:
+            name: "Water Flow Rate"
+          last_read:
+            name: "Water Meter Last Read"
+
+        - serial_number: !secret mbus_heat_meter_serial
+          slot: 3
+          medium: heat
+          total_energy:
+            name: "Heat Consumption"
+          thermal_power:
+            name: "Heat Power"
+          volume_flow_rate:
+            name: "Heating Water Flow Rate"
+          flow_temperature:
+            name: "Heating Flow Temperature"
+          return_temperature:
+            name: "Heating Return Temperature"
+          temperature_difference:
+            name: "Heating Temperature Difference"
+          last_read:
+            name: "Heat Meter Last Read"
+
+# Add these placeholders to secrets.yaml and replace them with the serials
+# printed on your own M-Bus meters:
+# mbus_water_meter_serial: "12345678"
+# mbus_heat_meter_serial: "87654321"

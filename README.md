@@ -3,12 +3,13 @@
 `osgp_meter` is an [ESPHome](https://esphome.io) external component for smart meters that expose an
 optical infrared port and speak [Open Smart Grid Protocol (OSGP)](https://www.osgp.org) ([Wikipedia](https://en.wikipedia.org/wiki/Open_Smart_Grid_Protocol)) instead of the
 often seen SML protocol (which is already [well supported in ESPHome](https://esphome.io/components/sml/)).
-It has been tested on [Networked Energy Services (NES) / Echelon style meters](https://www.networkedenergy.com/en/products/smart-meters) with a [Hichi WLAN v2 infrared device](https://sites.google.com/view/hichi-lesekopf/wifi-v2) and it exposes lots of useful information on your power usage, consumption, voltages and many other grid-specific data points. You can also monitor energy returned to the grid.
+It has been tested on [Networked Energy Services (NES) / Echelon style meters](https://www.networkedenergy.com/en/products/smart-meters) with a [Hichi WLAN v2 infrared device](https://sites.google.com/view/hichi-lesekopf/wifi-v2) and it exposes lots of useful information on your power usage, consumption, voltages and many other grid-specific data points. You can also monitor energy returned to the grid. Via the `mbus:` configuration setting, you can additionally track [Meter-Bus](https://en.wikipedia.org/wiki/Meter-Bus)-connected meters, such as water consumption or heat.
 
 > You'll most likely require a read-only key (RK) that -- at least in Germany -- is handed out by some power grid companies that install these smart meters.
 
-It is intended to be dropped into ESPHome via a `external_components`
-configuration entry, see [the example configuration file](example_nes_meter.yaml).
+It is intended to be dropped into ESPHome via an `external_components`
+configuration entry. See the [electricity example](example_nes_meter.yaml) or
+the [electricity, water, and heat example](example_nes_meter_mbus.yaml).
 
 ## Why?
 
@@ -22,6 +23,7 @@ See documentation how to integrate ESPHome devices like yours. You maybe want to
 - Forward / reverse energy counters
 - Instantaneous power, current, voltage, power factor, and frequency
 - Static meter information such as manufacturer, model, firmware, and serials
+- Scheduled M-Bus water and heat-meter readings exposed through the electricity meter
 - Optional diagnostics for unknown frames and reset reasons
 
 ## Installation
@@ -47,8 +49,7 @@ Make sure to have all other required settings configured in your ESPHome YAML (e
 
 ## Minimal OSGP Component Configuration
 
-See [example_nes_meter.yaml](example_nes_meter.yaml) for a full example. The
-important pieces are as follows:
+See [example_nes_meter.yaml](example_nes_meter.yaml) for a full example. You will need to configure your ESPHome-compatible infrared device properly (e.g. to connect to your WiFi, connect to Home Assistant etc.), but the important pieces for this OSGP Meter ESPHome component are as follows:
 
 ```yaml
 # The serial port interface for the infrared LEDs: Change according to your setup.
@@ -107,6 +108,68 @@ The current implementation is known to work with a live NES meter using:
 - username `esphome`
 - password provided by power grid company (20 character ASCII key)
 
+## Example: M-Bus Water And Heat Meters
+
+Some OSGP electricity meters act as an M-Bus relay for other household meters. See your electricity meter display for a "M"-line with adjacent numbers. These numbers represent the "slots" where other meters in your household are connected. Try pressing the "Display Cycle" button on your NES smart meter for about eleven seconds to run a M-Bus scan that searches for available M-Bus meters in your household. Note: It is very likely that they are connected and available already, so there is usually no need to run this scan.
+
+If the meter knows about the connected M-Bus meters, this ESPHome component can discover configured devices by their eight-digit M-Bus serial
+number and read RK-accessible scheduled data from ET16 and the ET45 circular
+log. It reads at regular intervals and does not issue on-demand reads, as this would require a different access key (MAK).
+
+Use [example_nes_meter_mbus.yaml](example_nes_meter_mbus.yaml) for a complete
+water and heat setup. Keep household identifiers in the ignored
+`secrets.yaml`:
+
+```yaml
+mbus_water_meter_serial: "12345678"
+mbus_heat_meter_serial: "87654321"
+```
+
+The optional `slot` is a discovery hint (`1` through `4`); serial matching is
+authoritative. `medium: water` accepts generic, hot-water, and cold-water M-Bus
+medium codes. If a configured convenience value is absent from a telegram, its
+ESPHome entity remains unavailable and no recurring warning is emitted.
+
+The component supplies native ESPHome/Home Assistant metadata unless YAML
+overrides it:
+
+| Value | Unit | Device class | State class |
+| --- | --- | --- | --- |
+| Water total | `m³` | `water` | `total_increasing` |
+| Water/heating flow | `m³/h` | `volume_flow_rate` | `measurement` |
+| Heat total | `kWh` | `energy` | `total_increasing` |
+| Thermal power | `W` | `power` | `measurement` |
+| Temperatures | `°C` | `temperature` | `measurement` |
+| Temperature difference | `K` | `temperature_delta` | `measurement` |
+
+Pressure and duration raw records also receive corresponding units and device
+classes. Explicit `unit_of_measurement`, `device_class`, `state_class`,
+`accuracy_decimals`, and `icon` values in YAML take precedence over inferred
+defaults. These properties are forwarded through ESPHome's native API for Home
+Assistant dashboards and long-term statistics. See the
+[ESPHome sensor metadata](https://esphome.io/components/sensor/index.html) and
+[Home Assistant sensor classes](https://developers.home-assistant.io/docs/core/entity/sensor/).
+
+M-Bus timestamps describe when the electricity meter collected each scheduled
+read. Collection frequency is configured in the
+meter and can be much slower than `mbus.update_interval`; use `last_read` to
+judge freshness.
+
+For initial discovery, temporarily set `dump_records: true` and use a DEBUG
+logger. Each record is logged with DIF, VIF, function, storage, tariff, and
+subunit. Uncommon records can then be selected explicitly:
+
+```yaml
+records:
+  - name: "Custom M-Bus Value"
+    dif: 0x04
+    vif: 0x13
+    function: instantaneous
+    storage: 1
+```
+
+Return `dump_records` to `false` for normal operation.
+
 ## Important Notes
 
 - Do not enable UART debug logging on the same UART as the optical IR head.
@@ -114,6 +177,8 @@ The current implementation is known to work with a live NES meter using:
 - `log_raw: true` is useful for troubleshooting, but it is noisy and usually
   not needed for normal operation.
 - Your meter must allow read-only access with the password / RK you provide.
+- M-Bus availability and scheduled-read contents depend on the electricity
+  meter's M-Bus configuration and the records emitted by each attached meter.
 
 ## References & Links
 

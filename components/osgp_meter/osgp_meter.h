@@ -13,6 +13,7 @@
 #include "esphome/components/text_sensor/text_sensor.h"
 #endif
 #include "esphome/components/uart/uart.h"
+#include "osgp_mbus.h"
 
 namespace esphome {
 namespace osgp_meter {
@@ -54,6 +55,23 @@ class OSGPMeter : public PollingComponent, public uart::UARTDevice {
   void set_static_info_interval(uint32_t interval_ms) { this->static_info_interval_ms_ = interval_ms; }
   void set_poll_jitter(uint32_t jitter_ms) { this->poll_jitter_ms_ = jitter_ms; }
   void set_health_log_interval(uint32_t interval_ms) { this->health_log_interval_ms_ = interval_ms; }
+  void set_mbus_update_interval(uint32_t interval_ms) { this->mbus_update_interval_ms_ = interval_ms; }
+  void set_mbus_dump_records(bool dump_records) { this->mbus_dump_records_ = dump_records; }
+  void add_mbus_device(const std::string &serial_number, uint8_t slot_hint, uint8_t medium);
+  void set_mbus_total_volume_sensor(size_t index, sensor::Sensor *sensor);
+  void set_mbus_total_energy_sensor(size_t index, sensor::Sensor *sensor);
+  void set_mbus_volume_flow_rate_sensor(size_t index, sensor::Sensor *sensor);
+  void set_mbus_thermal_power_sensor(size_t index, sensor::Sensor *sensor);
+  void set_mbus_flow_temperature_sensor(size_t index, sensor::Sensor *sensor);
+  void set_mbus_return_temperature_sensor(size_t index, sensor::Sensor *sensor);
+  void set_mbus_temperature_difference_sensor(size_t index, sensor::Sensor *sensor);
+#ifdef USE_TEXT_SENSOR
+  void set_mbus_last_read_text_sensor(size_t index, text_sensor::TextSensor *sensor);
+  void set_mbus_status_text_sensor(size_t index, text_sensor::TextSensor *sensor);
+#endif
+  void add_mbus_record_sensor(size_t device_index, sensor::Sensor *sensor, uint8_t dif, uint8_t vif,
+                              uint8_t function, int64_t storage, int64_t tariff, int64_t subunit);
+  void add_mbus_record_vife(size_t device_index, size_t record_index, uint8_t vife);
 
   void set_fwd_active_energy_sensor(sensor::Sensor *sensor) { this->fwd_active_energy_sensor_ = sensor; }
   void set_rev_active_energy_sensor(sensor::Sensor *sensor) { this->rev_active_energy_sensor_ = sensor; }
@@ -122,6 +140,70 @@ class OSGPMeter : public PollingComponent, public uart::UARTDevice {
   uint32_t timeout_payload_count_{0};
   uint32_t crc_error_count_{0};
 
+  struct MBusRecordSensor {
+    sensor::Sensor *sensor{nullptr};
+    uint8_t dif{0};
+    uint8_t vif{0};
+    uint8_t function{0};
+    int64_t storage{-1};
+    int64_t tariff{-1};
+    int64_t subunit{-1};
+    std::vector<uint8_t> vife{};
+  };
+
+  struct MBusDevice {
+    std::string serial_number{};
+    uint8_t slot_hint{0};
+    uint8_t configured_medium{0};
+    uint8_t slot{0};
+    uint16_t handle{0};
+    uint8_t device_status{0};
+    bool found{false};
+    sensor::Sensor *total_volume_sensor{nullptr};
+    sensor::Sensor *total_energy_sensor{nullptr};
+    sensor::Sensor *volume_flow_rate_sensor{nullptr};
+    sensor::Sensor *thermal_power_sensor{nullptr};
+    sensor::Sensor *flow_temperature_sensor{nullptr};
+    sensor::Sensor *return_temperature_sensor{nullptr};
+    sensor::Sensor *temperature_difference_sensor{nullptr};
+#ifdef USE_TEXT_SENSOR
+    text_sensor::TextSensor *last_read_text_sensor{nullptr};
+    text_sensor::TextSensor *status_text_sensor{nullptr};
+#endif
+    std::vector<MBusRecordSensor> records{};
+  };
+
+  struct MBusSlot {
+    bool occupied{false};
+    uint16_t handle{0};
+    uint8_t status{0};
+    uint16_t billing_read_length{0};
+  };
+
+  std::vector<MBusDevice> mbus_devices_{};
+  std::array<MBusSlot, 4> mbus_slots_{};
+  uint32_t mbus_update_interval_ms_{60000};
+  uint32_t next_mbus_update_ms_{0};
+  bool mbus_dump_records_{false};
+  bool mbus_dimensions_loaded_{false};
+  bool mbus_et45_dimensions_loaded_{false};
+  uint8_t mbus_device_count_{0};
+  uint16_t mbus_status_entry_size_{0};
+  uint16_t mbus_data_entry_size_{0};
+  uint8_t mbus_et36_count_{0};
+  uint16_t mbus_et45_entry_size_{0};
+  uint16_t mbus_et45_current_entries_{0};
+  bool mbus_et45_sequence_valid_{false};
+  uint16_t mbus_et45_sequence_{0};
+  uint16_t mbus_et45_pending_sequence_{0};
+  uint16_t mbus_et45_scan_remaining_{0};
+  uint16_t mbus_et45_scan_index_{0};
+  uint32_t mbus_et45_pending_offset_{0};
+  uint16_t mbus_et45_pending_length_{0};
+  uint8_t mbus_et14_scan_slot_{0};
+  uint8_t mbus_et16_scan_slot_{0};
+  std::vector<bool> mbus_cycle_devices_found_{};
+
   sensor::Sensor *fwd_active_energy_sensor_{nullptr};
   sensor::Sensor *rev_active_energy_sensor_{nullptr};
   sensor::Sensor *fwd_active_power_sensor_{nullptr};
@@ -182,6 +264,16 @@ class OSGPMeter : public PollingComponent, public uart::UARTDevice {
     POLL_READ_TABLE28,
     POLL_READ_TABLE23,
     POLL_READ_TOU_TIER_BLOCK,
+    MBUS_PREPARE,
+    MBUS_READ_ET11,
+    MBUS_READ_ET14,
+    MBUS_READ_ET14_ENTRY,
+    MBUS_READ_ET16,
+    MBUS_READ_ET36_COUNT,
+    MBUS_READ_ET36,
+    MBUS_READ_ET45_HEADER,
+    MBUS_READ_ET45_ENTRY,
+    MBUS_READ_ET45_ENTRY_DATA,
     REQ_LOGOFF,
     REQ_TERMINATE,
   };
@@ -252,6 +344,7 @@ class OSGPMeter : public PollingComponent, public uart::UARTDevice {
   bool request_completed_{false};
   bool request_success_{false};
   bool request_hide_contents_{false};
+  bool request_warn_on_failure_{true};
   uint32_t request_next_send_ms_{0};
   uint32_t request_deadline_ms_{0};
   bool poll_due_{true};
@@ -282,8 +375,10 @@ class OSGPMeter : public PollingComponent, public uart::UARTDevice {
   void send_request_frame_now_(uint32_t now);
   void schedule_request_retry_(uint32_t now, const char *reason);
   void fail_request_(const char *reason);
-  bool begin_request_(const uint8_t *payload, size_t length, bool hide_contents, const char *name);
-  StepResult run_request_step_(const uint8_t *payload, size_t length, bool hide_contents, const char *name);
+  bool begin_request_(const uint8_t *payload, size_t length, bool hide_contents, const char *name,
+                      bool warn_on_failure);
+  StepResult run_request_step_(const uint8_t *payload, size_t length, bool hide_contents, const char *name,
+                               bool warn_on_failure = true);
   bool consume_request_response_ack_(ByteReader &reader, const char *context);
   bool parse_bt21_reply_(ByteReader &reader);
   bool parse_bt22_reply_(ByteReader &reader);
@@ -297,6 +392,18 @@ class OSGPMeter : public PollingComponent, public uart::UARTDevice {
   bool has_static_info_sensors_() const;
   void reset_bt21_bt22_();
   bool publish_tou_from_sources_(const std::vector<int32_t> &summations);
+  void process_mbus_state_(uint32_t now);
+  void finish_mbus_cycle_(uint32_t now);
+  bool consume_partial_table_reply_(std::vector<uint8_t> &data, const char *context);
+  bool parse_mbus_et11_(const std::vector<uint8_t> &data);
+  bool parse_mbus_et14_header_(const std::vector<uint8_t> &data);
+  bool parse_mbus_et14_entry_(uint8_t slot, const std::vector<uint8_t> &data);
+  bool parse_mbus_et36_(const std::vector<uint8_t> &data);
+  bool parse_mbus_et45_header_(const std::vector<uint8_t> &data);
+  void parse_mbus_et16_entry_(uint8_t slot, const std::vector<uint8_t> &data);
+  void parse_mbus_et45_entry_(const std::vector<uint8_t> &data);
+  void publish_mbus_reading_(MBusDevice &device, const mbus::Reading &reading);
+  bool all_mbus_cycle_devices_found_() const;
   void schedule_init_backoff_(const char *reason);
   void record_unknown_signal_(uint8_t value, const char *context);
   void record_unknown_signal_(uint8_t value, uint8_t context);
