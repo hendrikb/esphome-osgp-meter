@@ -12,7 +12,7 @@ static const char *const TAG = "osgp_meter";
 void OSGPMeter::record_unknown_signal_(uint8_t value, const char *context) {
   this->unknown_signal_count_++;
   utils::publish_state_if_present(this->unknown_signal_count_sensor_, static_cast<float>(this->unknown_signal_count_));
-  ESP_LOGV(TAG, "Unknown signal (%s): 0x%02X (count=%u)", context, value,
+  ESP_LOGV(TAG, "Unknown signal (%s): 0x%02X (count=%u)", context, static_cast<unsigned>(value),
            static_cast<unsigned>(this->unknown_signal_count_));
 }
 
@@ -53,8 +53,8 @@ void OSGPMeter::record_unknown_signal_(uint8_t value, uint8_t context) {
     this->last_unknown_bytes_.push_back(value);
   }
   this->last_unknown_ms_ = now;
-  ESP_LOGV(TAG, "Unknown signal (%s): 0x%02X (count=%u)", utils::unknown_context_label(context), value,
-           static_cast<unsigned>(this->unknown_signal_count_));
+  ESP_LOGV(TAG, "Unknown signal (%s): 0x%02X (count=%u)", utils::unknown_context_label(context),
+           static_cast<unsigned>(value), static_cast<unsigned>(this->unknown_signal_count_));
 }
 
 void OSGPMeter::maybe_finalize_unknown_sequence_() {
@@ -99,8 +99,8 @@ void OSGPMeter::finalize_unknown_sequence_() {
     ESP_LOGI(TAG,
              "Orphaned frame header (missing START, filtered) ctrl=0x%02X flags=%s seq=%u len=%u observed=%u "
              "captured=%u bytes=%s",
-             ctrl, flags.c_str(), seq, length, static_cast<unsigned>(observed), static_cast<unsigned>(captured),
-             payload.c_str());
+             static_cast<unsigned>(ctrl), flags.c_str(), static_cast<unsigned>(seq), static_cast<unsigned>(length),
+             static_cast<unsigned>(observed), static_cast<unsigned>(captured), payload.c_str());
   } else {
     this->unknown_sequence_count_++;
     utils::publish_state_if_present(this->unknown_sequence_count_sensor_,

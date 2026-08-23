@@ -41,9 +41,12 @@ bool OSGPMeter::handle_table0_reply_(ByteReader &table_data) {
   ESP_LOGI(TAG,
            "Table0 length=%u byte_order=%s char_format=%u time_format=%u data_access=%u ident_bcd=%s manufacturer=%s "
            "nameplate_type=%u default_set=%u procedure_len=%u response_len=%u std_ver=%u std_rev=%u",
-           table_length, this->byte_order_little_ ? "little" : "big", char_format, time_format, data_access_method,
-           identification_bcd ? "true" : "false", manufacturer.c_str(), nameplate_type, default_set_used,
-           procedure_parameter_length, response_data_length, standard_version, standard_revision);
+           static_cast<unsigned>(table_length), this->byte_order_little_ ? "little" : "big",
+           static_cast<unsigned>(char_format), static_cast<unsigned>(time_format),
+           static_cast<unsigned>(data_access_method), identification_bcd ? "true" : "false", manufacturer.c_str(),
+           static_cast<unsigned>(nameplate_type), static_cast<unsigned>(default_set_used),
+           static_cast<unsigned>(procedure_parameter_length), static_cast<unsigned>(response_data_length),
+           static_cast<unsigned>(standard_version), static_cast<unsigned>(standard_revision));
 
   return true;
 }
@@ -63,7 +66,7 @@ bool OSGPMeter::handle_table23_reply_(ByteReader &table_data, bool use_tou) {
     utils::publish_state_if_present(this->fwd_active_energy_sensor_, static_cast<float>(fwd_wh) / 1000.0f);
     utils::publish_state_if_present(this->rev_active_energy_sensor_, static_cast<float>(rev_wh) / 1000.0f);
     if (table_length != 0x08) {
-      ESP_LOGD(TAG, "Table23 unexpected length %u", table_length);
+      ESP_LOGD(TAG, "Table23 unexpected length %u", static_cast<unsigned>(table_length));
     }
     ESP_LOGI(TAG, "Table23 Fwd %.3f kWh Rev %.3f kWh", static_cast<float>(fwd_wh) / 1000.0f,
              static_cast<float>(rev_wh) / 1000.0f);
@@ -108,7 +111,7 @@ bool OSGPMeter::handle_table23_reply_(ByteReader &table_data, bool use_tou) {
       if (this->num_demands_ != 0 || this->num_coincident_ != 0) {
         if (!this->warned_tier_block_skip_) {
           ESP_LOGW(TAG, "TOU tier blocks skipped because demand/coincident sizes are non-zero (demands=%u coincident=%u)",
-                   this->num_demands_, this->num_coincident_);
+                   static_cast<unsigned>(this->num_demands_), static_cast<unsigned>(this->num_coincident_));
           this->warned_tier_block_skip_ = true;
         }
       } else {
@@ -121,7 +124,7 @@ bool OSGPMeter::handle_table23_reply_(ByteReader &table_data, bool use_tou) {
   }
 
   if (table_length != 0x08 && this->num_summations_ == 2) {
-    ESP_LOGD(TAG, "Table23 unexpected length %u", table_length);
+    ESP_LOGD(TAG, "Table23 unexpected length %u", static_cast<unsigned>(table_length));
   }
   ESP_LOGI(TAG, "Table23 Fwd %.3f kWh Rev %.3f kWh", fwd_kwh, rev_kwh);
   return true;
@@ -198,7 +201,8 @@ bool OSGPMeter::handle_table28_reply_(ByteReader &table_data) {
       }
     }
     if (extra_to_read < extra_needed) {
-      ESP_LOGD(TAG, "Table28 missing extended values: need %u extra, have %u", extra_needed, extra_available);
+      ESP_LOGD(TAG, "Table28 missing extended values: need %u extra, have %u", static_cast<unsigned>(extra_needed),
+               static_cast<unsigned>(extra_available));
     }
   }
 
@@ -226,13 +230,15 @@ bool OSGPMeter::handle_table28_reply_(ByteReader &table_data) {
   }
 
   if (table_length < 0x28) {
-    ESP_LOGD(TAG, "Table28 unexpected length %u", table_length);
+    ESP_LOGD(TAG, "Table28 unexpected length %u", static_cast<unsigned>(table_length));
   }
   ESP_LOGI(TAG,
-           "Table28 P_fwd=%dW P_rev=%dW Q_imp=%dvar Q_exp=%dvar I=%.3f/%.3f/%.3fA V=%.3f/%.3f/%.3fV", fwd_w, rev_w,
-           import_var, export_var, static_cast<float>(l1_ma) / 1000.0f, static_cast<float>(l2_ma) / 1000.0f,
-           static_cast<float>(l3_ma) / 1000.0f, static_cast<float>(l1_mv) / 1000.0f,
-           static_cast<float>(l2_mv) / 1000.0f, static_cast<float>(l3_mv) / 1000.0f);
+           "Table28 P_fwd=%ldW P_rev=%ldW Q_imp=%ldvar Q_exp=%ldvar I=%.3f/%.3f/%.3fA V=%.3f/%.3f/%.3fV",
+           static_cast<long>(fwd_w), static_cast<long>(rev_w), static_cast<long>(import_var),
+           static_cast<long>(export_var), static_cast<float>(l1_ma) / 1000.0f,
+           static_cast<float>(l2_ma) / 1000.0f, static_cast<float>(l3_ma) / 1000.0f,
+           static_cast<float>(l1_mv) / 1000.0f, static_cast<float>(l2_mv) / 1000.0f,
+           static_cast<float>(l3_mv) / 1000.0f);
   return true;
 }
 

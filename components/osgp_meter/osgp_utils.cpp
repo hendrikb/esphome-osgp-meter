@@ -13,7 +13,7 @@ std::string bytes_to_hex(const uint8_t *data, size_t len) {
   out.reserve(len * 3);
   char buf[4];
   for (size_t i = 0; i < len; i++) {
-    snprintf(buf, sizeof(buf), "%02X ", data[i]);
+    snprintf(buf, sizeof(buf), "%02X ", static_cast<unsigned>(data[i]));
     out.append(buf);
   }
   return out;
@@ -56,7 +56,8 @@ std::string firmware_version_string(uint8_t major_minor, uint8_t build) {
   const uint8_t minor = (value >> 5) & 0x7F;
   const uint8_t patch = value & 0x1F;
   char buffer[16];
-  snprintf(buffer, sizeof(buffer), "%u.%02u.%02u", major, minor, patch);
+  snprintf(buffer, sizeof(buffer), "%u.%02u.%02u", static_cast<unsigned>(major), static_cast<unsigned>(minor),
+           static_cast<unsigned>(patch));
   return buffer;
 }
 
@@ -96,7 +97,7 @@ std::string ctrl_flags_label(uint8_t ctrl) {
       flags.append(",");
     }
     char buf[16];
-    snprintf(buf, sizeof(buf), "other=0x%02X", unknown);
+    snprintf(buf, sizeof(buf), "other=0x%02X", static_cast<unsigned>(unknown));
     flags.append(buf);
   }
   if (flags.empty()) {

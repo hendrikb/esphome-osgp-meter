@@ -126,13 +126,13 @@ const char *OSGPMeter::connect_state_label_() const {
 
 void OSGPMeter::dump_config() {
   ESP_LOGCONFIG(TAG, "OSGP Meter");
-  ESP_LOGCONFIG(TAG, "  User ID: %u", this->user_id_);
+  ESP_LOGCONFIG(TAG, "  User ID: %u", static_cast<unsigned>(this->user_id_));
   ESP_LOGCONFIG(TAG, "  Username: %s", this->username_.c_str());
-  ESP_LOGCONFIG(TAG, "  Refresh interval: %u ms", this->refresh_interval_ms_);
-  ESP_LOGCONFIG(TAG, "  Logoff interval: %u ms", this->logoff_interval_ms_);
-  ESP_LOGCONFIG(TAG, "  Static info interval: %u ms", this->static_info_interval_ms_);
-  ESP_LOGCONFIG(TAG, "  Poll jitter: %u ms", this->poll_jitter_ms_);
-  ESP_LOGCONFIG(TAG, "  Health log interval: %u ms", this->health_log_interval_ms_);
+  ESP_LOGCONFIG(TAG, "  Refresh interval: %lu ms", static_cast<unsigned long>(this->refresh_interval_ms_));
+  ESP_LOGCONFIG(TAG, "  Logoff interval: %lu ms", static_cast<unsigned long>(this->logoff_interval_ms_));
+  ESP_LOGCONFIG(TAG, "  Static info interval: %lu ms", static_cast<unsigned long>(this->static_info_interval_ms_));
+  ESP_LOGCONFIG(TAG, "  Poll jitter: %lu ms", static_cast<unsigned long>(this->poll_jitter_ms_));
+  ESP_LOGCONFIG(TAG, "  Health log interval: %lu ms", static_cast<unsigned long>(this->health_log_interval_ms_));
   ESP_LOGCONFIG(TAG, "  Raw frame logging: %s", this->log_raw_ ? "true" : "false");
 }
 
@@ -170,7 +170,7 @@ void OSGPMeter::schedule_init_backoff_(const char *reason) {
   this->request_response_buffer_.clear();
   this->rx_contents_buffer_.clear();
   this->reset_rx_parser_();
-  ESP_LOGW(TAG, "Init failed (%s), backing off for %u ms", reason, backoff_ms);
+  ESP_LOGW(TAG, "Init failed (%s), backing off for %lu ms", reason, static_cast<unsigned long>(backoff_ms));
 }
 
 bool OSGPMeter::has_tou_sensors_() const {
@@ -300,7 +300,7 @@ bool OSGPMeter::consume_request_response_ack_(ByteReader &reader, const char *co
   this->request_response_buffer_.clear();
   uint8_t response = response_reader.get_u8();
   if (response != 0x00) {
-    ESP_LOGW(TAG, "Unexpected response code %u for %s", response, context);
+    ESP_LOGW(TAG, "Unexpected response code %u for %s", static_cast<unsigned>(response), context);
     return false;
   }
   reader = std::move(response_reader);
@@ -398,7 +398,8 @@ void OSGPMeter::handle_rx_frame_complete_(uint32_t now) {
   calculated_crc = crc16.calculate(this->rx_header_.data(), this->rx_header_.size(), calculated_crc);
   calculated_crc = crc16.calculate(this->rx_tail_buffer_.data(), this->rx_expected_length_, calculated_crc) ^ 0xFFFF;
   if (message_crc != calculated_crc) {
-    ESP_LOGW(TAG, "Incorrect CRC received. Calculated %04X got %04X", calculated_crc, message_crc);
+    ESP_LOGW(TAG, "Incorrect CRC received. Calculated %04X got %04X", static_cast<unsigned>(calculated_crc),
+             static_cast<unsigned>(message_crc));
     this->crc_error_count_++;
     this->write_byte(protocol::NACK);
     if (this->request_state_ == RequestState::WAIT_RESPONSE) {
@@ -533,8 +534,9 @@ bool OSGPMeter::parse_bt21_reply_(ByteReader &reader) {
   reader.get_u8();  // num_present_values
   this->demand_reset_counter_ = (flags0 & 0x04) != 0;
   this->bt21_loaded_ = true;
-  ESP_LOGD(TAG, "BT21 length %u summations %u tiers %u demands %u coincident %u", table_length, this->num_summations_,
-           this->num_tiers_, this->num_demands_, this->num_coincident_);
+  ESP_LOGD(TAG, "BT21 length %u summations %u tiers %u demands %u coincident %u", static_cast<unsigned>(table_length),
+           static_cast<unsigned>(this->num_summations_), static_cast<unsigned>(this->num_tiers_),
+           static_cast<unsigned>(this->num_demands_), static_cast<unsigned>(this->num_coincident_));
   return true;
 }
 
@@ -568,7 +570,8 @@ bool OSGPMeter::parse_bt22_reply_(ByteReader &reader) {
     }
   }
   this->bt22_loaded_ = true;
-  ESP_LOGD(TAG, "BT22 length %u loaded %u summation source IDs", table_length, this->num_summations_);
+  ESP_LOGD(TAG, "BT22 length %u loaded %u summation source IDs", static_cast<unsigned>(table_length),
+           static_cast<unsigned>(this->num_summations_));
   return true;
 }
 
@@ -1159,12 +1162,14 @@ void OSGPMeter::maybe_log_health_(uint32_t now) {
   uint32_t last_success_age = (this->last_success_ms_ == 0) ? 0 : (now - this->last_success_ms_);
   uint32_t last_rx_age = (this->last_rx_ms_ == 0) ? 0 : (now - this->last_rx_ms_);
   ESP_LOGI(TAG,
-           "Health state=%s last_success=%ums last_rx=%ums unknown=%u pre=%u start=%u resp=%u timeouts(h/p)=%u/%u "
-           "crc=%u init_fail=%u",
-           this->connect_state_label_(), last_success_age, last_rx_age, static_cast<unsigned>(this->unknown_signal_count_),
-           static_cast<unsigned>(this->unknown_pre_send_count_), static_cast<unsigned>(this->unknown_start_scan_count_),
-           static_cast<unsigned>(this->unknown_response_count_), static_cast<unsigned>(this->timeout_header_count_),
-           static_cast<unsigned>(this->timeout_payload_count_), static_cast<unsigned>(this->crc_error_count_),
+           "Health state=%s last_success=%lums last_rx=%lums unknown=%lu pre=%lu start=%lu resp=%lu "
+           "timeouts(h/p)=%lu/%lu crc=%lu init_fail=%u",
+           this->connect_state_label_(), static_cast<unsigned long>(last_success_age),
+           static_cast<unsigned long>(last_rx_age), static_cast<unsigned long>(this->unknown_signal_count_),
+           static_cast<unsigned long>(this->unknown_pre_send_count_),
+           static_cast<unsigned long>(this->unknown_start_scan_count_),
+           static_cast<unsigned long>(this->unknown_response_count_), static_cast<unsigned long>(this->timeout_header_count_),
+           static_cast<unsigned long>(this->timeout_payload_count_), static_cast<unsigned long>(this->crc_error_count_),
            static_cast<unsigned>(this->init_failures_));
 }
 
