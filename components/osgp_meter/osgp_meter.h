@@ -159,6 +159,12 @@ class OSGPMeter : public PollingComponent, public uart::UARTDevice {
     uint16_t handle{0};
     uint8_t device_status{0};
     bool found{false};
+    mbus::DeviceConfiguration diagnostic_configuration{};
+    bool diagnostic_configuration_valid{false};
+    uint16_t diagnostic_load_profile_poll_minutes{0};
+    bool diagnostic_load_profile_poll_valid{false};
+    std::vector<mbus::PrimaryLoadProfileChannel> diagnostic_primary_channels{};
+    std::string diagnostic_summary{};
     sensor::Sensor *total_volume_sensor{nullptr};
     sensor::Sensor *total_energy_sensor{nullptr};
     sensor::Sensor *volume_flow_rate_sensor{nullptr};
@@ -188,6 +194,8 @@ class OSGPMeter : public PollingComponent, public uart::UARTDevice {
   bool mbus_dimensions_loaded_{false};
   bool mbus_et45_dimensions_loaded_{false};
   uint8_t mbus_device_count_{0};
+  uint8_t mbus_config_entry_size_{0};
+  uint8_t mbus_config2_entry_size_{0};
   uint16_t mbus_status_entry_size_{0};
   uint16_t mbus_data_entry_size_{0};
   uint8_t mbus_et36_count_{0};
@@ -203,6 +211,11 @@ class OSGPMeter : public PollingComponent, public uart::UARTDevice {
   uint8_t mbus_et14_scan_slot_{0};
   uint8_t mbus_et16_scan_slot_{0};
   std::vector<bool> mbus_cycle_devices_found_{};
+  bool mbus_diagnostics_active_{false};
+  uint32_t last_mbus_diagnostics_ms_{0};
+  size_t mbus_diagnostic_device_index_{0};
+  mbus::PrimaryLoadProfileLayout mbus_primary_load_profile_layout_{};
+  bool mbus_primary_load_profile_valid_{false};
 
   sensor::Sensor *fwd_active_energy_sensor_{nullptr};
   sensor::Sensor *rev_active_energy_sensor_{nullptr};
@@ -274,6 +287,12 @@ class OSGPMeter : public PollingComponent, public uart::UARTDevice {
     MBUS_READ_ET45_HEADER,
     MBUS_READ_ET45_ENTRY,
     MBUS_READ_ET45_ENTRY_DATA,
+    MBUS_DIAGNOSTICS_PREPARE,
+    MBUS_DIAGNOSTICS_READ_ET13,
+    MBUS_DIAGNOSTICS_READ_ET34,
+    MBUS_DIAGNOSTICS_READ_ET42_HEADER,
+    MBUS_DIAGNOSTICS_READ_ET42_SOURCES,
+    MBUS_DIAGNOSTICS_LOG,
     REQ_LOGOFF,
     REQ_TERMINATE,
   };
@@ -394,10 +413,16 @@ class OSGPMeter : public PollingComponent, public uart::UARTDevice {
   bool publish_tou_from_sources_(const std::vector<int32_t> &summations);
   void process_mbus_state_(uint32_t now);
   void finish_mbus_cycle_(uint32_t now);
+  void finish_mbus_diagnostics_(uint32_t now);
   bool consume_partial_table_reply_(std::vector<uint8_t> &data, const char *context);
   bool parse_mbus_et11_(const std::vector<uint8_t> &data);
   bool parse_mbus_et14_header_(const std::vector<uint8_t> &data);
   bool parse_mbus_et14_entry_(uint8_t slot, const std::vector<uint8_t> &data);
+  bool parse_mbus_et13_entry_(MBusDevice &device, const std::vector<uint8_t> &data);
+  bool parse_mbus_et34_entry_(MBusDevice &device, const std::vector<uint8_t> &data);
+  bool parse_mbus_et42_header_(const std::vector<uint8_t> &data);
+  bool parse_mbus_et42_sources_(const std::vector<uint8_t> &data);
+  void log_mbus_diagnostics_();
   bool parse_mbus_et36_(const std::vector<uint8_t> &data);
   bool parse_mbus_et45_header_(const std::vector<uint8_t> &data);
   void parse_mbus_et16_entry_(uint8_t slot, const std::vector<uint8_t> &data);

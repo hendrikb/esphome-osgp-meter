@@ -1155,6 +1155,12 @@ void OSGPMeter::process_session_state_(uint32_t now) {
     case SessionState::MBUS_READ_ET45_HEADER:
     case SessionState::MBUS_READ_ET45_ENTRY:
     case SessionState::MBUS_READ_ET45_ENTRY_DATA:
+    case SessionState::MBUS_DIAGNOSTICS_PREPARE:
+    case SessionState::MBUS_DIAGNOSTICS_READ_ET13:
+    case SessionState::MBUS_DIAGNOSTICS_READ_ET34:
+    case SessionState::MBUS_DIAGNOSTICS_READ_ET42_HEADER:
+    case SessionState::MBUS_DIAGNOSTICS_READ_ET42_SOURCES:
+    case SessionState::MBUS_DIAGNOSTICS_LOG:
       this->process_mbus_state_(now);
       return;
 

@@ -445,6 +445,173 @@ bool parse_reading(const uint8_t *data, size_t length, Reading &reading, std::st
   return parse_variable(data + 7, length - 7, little, reading, error);
 }
 
+bool parse_device_configuration(const uint8_t *data, size_t length, bool little, DeviceConfiguration &configuration,
+                                std::string *error) {
+  configuration = DeviceConfiguration{};
+  if (data == nullptr || length < 6) {
+    set_error(error, "ET13 device configuration is too short");
+    return false;
+  }
+  configuration.scheduled_day = data[0];
+  configuration.scheduled_hour = data[1];
+  configuration.scheduled_minute = data[2];
+  configuration.scheduled_frequency = data[3];
+  configuration.status_interval_minutes = static_cast<uint16_t>(read_unsigned(data + 4, 2, little));
+  if (configuration.scheduled_hour > 23 || configuration.scheduled_minute > 59 ||
+      configuration.scheduled_frequency > 4) {
+    set_error(error, "ET13 device schedule contains an invalid time or frequency");
+    return false;
+  }
+  if (configuration.scheduled_frequency == 2 && configuration.scheduled_day != 39 &&
+      (configuration.scheduled_day < 32 || configuration.scheduled_day > 38)) {
+    set_error(error, "ET13 weekly schedule contains an invalid day");
+    return false;
+  }
+  if (configuration.scheduled_frequency == 3 && configuration.scheduled_day > 28) {
+    set_error(error, "ET13 monthly schedule contains an invalid day");
+    return false;
+  }
+  return true;
+}
+
+bool parse_load_profile_poll_rate(const uint8_t *data, size_t length, bool little, uint16_t &poll_rate_minutes,
+                                  std::string *error) {
+  poll_rate_minutes = 0;
+  if (data == nullptr || length < 2) {
+    set_error(error, "ET34 load-profile poll rate is too short");
+    return false;
+  }
+  poll_rate_minutes = static_cast<uint16_t>(read_unsigned(data, 2, little));
+  return true;
+}
+
+bool parse_primary_load_profile_layout(const uint8_t *data, size_t length, bool little,
+                                       PrimaryLoadProfileLayout &layout, std::string *error) {
+  layout = PrimaryLoadProfileLayout{};
+  if (data == nullptr || length < 31) {
+    set_error(error, "ET42 fixed section is too short");
+    return false;
+  }
+  layout.table_length = static_cast<uint16_t>(read_unsigned(data, 2, little));
+  const uint8_t fixed_section_length = data[2];
+  const uint8_t log_list_size = data[3];
+  const uint8_t demand_sources = data[13];
+  const uint8_t coincident_sources = data[14];
+  layout.channel_count = data[29];
+  layout.interval_minutes = data[30];
+
+  const uint32_t source_offset = static_cast<uint32_t>(fixed_section_length) + 3U * log_list_size + demand_sources +
+                                 coincident_sources;
+  const uint32_t source_end = source_offset + 2U * layout.channel_count;
+  if (layout.table_length < length || source_offset > std::numeric_limits<uint16_t>::max() ||
+      source_end > layout.table_length || layout.channel_count > 64) {
+    set_error(error, "ET42 primary load-profile source dimensions are invalid");
+    return false;
+  }
+  layout.source_offset = static_cast<uint16_t>(source_offset);
+  return true;
+}
+
+bool find_primary_load_profile_channels(const uint8_t *data, size_t length, bool little, uint8_t slot,
+                                        std::vector<PrimaryLoadProfileChannel> &channels, std::string *error) {
+  channels.clear();
+  if (slot < 1 || slot > 4) {
+    set_error(error, "M-Bus slot is outside the supported range");
+    return false;
+  }
+  if (data == nullptr || (length % 2) != 0) {
+    set_error(error, "ET42 primary load-profile source list is malformed");
+    return false;
+  }
+  const uint8_t device_index = slot - 1;
+  for (size_t pos = 0; pos < length; pos += 2) {
+    const uint16_t source = static_cast<uint16_t>(read_unsigned(data + pos, 2, little));
+    if ((source >> 12) != 4 || ((source >> 8) & 0x0F) != device_index)
+      continue;
+    channels.push_back(
+        {static_cast<uint8_t>(pos / 2U), static_cast<uint8_t>(source & 0x1F)});
+  }
+  return true;
+}
+
+std::string format_scheduled_read(const DeviceConfiguration &configuration) {
+  char buffer[64];
+  switch (configuration.scheduled_frequency) {
+    case 0:
+      std::snprintf(buffer, sizeof(buffer), "hourly at minute %02u",
+                    static_cast<unsigned>(configuration.scheduled_minute));
+      return buffer;
+    case 1:
+      std::snprintf(buffer, sizeof(buffer), "daily at %02u:%02u", static_cast<unsigned>(configuration.scheduled_hour),
+                    static_cast<unsigned>(configuration.scheduled_minute));
+      return buffer;
+    case 2: {
+      if (configuration.scheduled_day == 39)
+        return "never";
+      static constexpr const char *DAYS[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
+                                              "Saturday"};
+      const size_t day_index = configuration.scheduled_day - 32U;
+      std::snprintf(buffer, sizeof(buffer), "weekly on %s at %02u:%02u", DAYS[day_index],
+                    static_cast<unsigned>(configuration.scheduled_hour),
+                    static_cast<unsigned>(configuration.scheduled_minute));
+      return buffer;
+    }
+    case 3:
+      std::snprintf(buffer, sizeof(buffer), "monthly on day %u at %02u:%02u",
+                    static_cast<unsigned>(configuration.scheduled_day == 0 ? 1 : configuration.scheduled_day),
+                    static_cast<unsigned>(configuration.scheduled_hour),
+                    static_cast<unsigned>(configuration.scheduled_minute));
+      return buffer;
+    case 4:
+    default:
+      return "never";
+  }
+}
+
+std::string format_status_reads(const DeviceConfiguration &configuration) {
+  if (configuration.status_interval_minutes == 0)
+    return "with billing reads";
+  char buffer[48];
+  std::snprintf(buffer, sizeof(buffer), "every %u min",
+                static_cast<unsigned>(configuration.status_interval_minutes));
+  return buffer;
+}
+
+std::string format_primary_load_profile(uint8_t interval_minutes, uint16_t poll_rate_minutes,
+                                        const std::vector<PrimaryLoadProfileChannel> &channels) {
+  std::string result;
+  if (channels.empty()) {
+    result = "no M-Bus channels";
+  } else {
+    result = "channels=";
+    for (size_t i = 0; i < channels.size(); i++) {
+      if (i != 0)
+        result += ',';
+      result += std::to_string(channels[i].channel) + ":MDT" + std::to_string(channels[i].mdt);
+    }
+  }
+  if (interval_minutes == 84) {
+    result += "; interval=24 h";
+  } else if (interval_minutes == 0) {
+    result += "; interval=disabled";
+  } else {
+    result += "; interval=" + std::to_string(interval_minutes) + " min";
+  }
+  if (poll_rate_minutes == 0) {
+    result += "; poll=every interval";
+  } else {
+    result += "; poll=" + std::to_string(poll_rate_minutes) + " min";
+  }
+  return result;
+}
+
+bool replace_diagnostic_summary_if_changed(std::string &previous, const std::string &current) {
+  if (previous == current)
+    return false;
+  previous = current;
+  return true;
+}
+
 const char *quantity_name(Quantity quantity) {
   switch (quantity) {
     case Quantity::ENERGY_WH:

@@ -8,6 +8,9 @@
 #include "osgp_mbus.h"
 
 using esphome::osgp_meter::mbus::Medium;
+using esphome::osgp_meter::mbus::DeviceConfiguration;
+using esphome::osgp_meter::mbus::PrimaryLoadProfileLayout;
+using esphome::osgp_meter::mbus::PrimaryLoadProfileChannel;
 using esphome::osgp_meter::mbus::Quantity;
 using esphome::osgp_meter::mbus::Reading;
 using esphome::osgp_meter::mbus::Record;
@@ -167,6 +170,122 @@ void test_matching_and_ring_helpers() {
   require(esphome::osgp_meter::mbus::previous_ring_index(12, 0) == 0, "empty ET45 ring");
 }
 
+void test_device_configuration_diagnostics() {
+  DeviceConfiguration configuration;
+  std::string error;
+  const uint8_t daily[] = {0, 0, 0, 1, 0, 0};
+  require(esphome::osgp_meter::mbus::parse_device_configuration(daily, sizeof(daily), true, configuration, &error),
+          error.c_str());
+  require(esphome::osgp_meter::mbus::format_scheduled_read(configuration) == "daily at 00:00",
+          "daily schedule formatting");
+  require(esphome::osgp_meter::mbus::format_status_reads(configuration) == "with billing reads",
+          "status with billing reads");
+
+  const uint8_t hourly[] = {0, 23, 5, 0, 60, 0};
+  require(esphome::osgp_meter::mbus::parse_device_configuration(hourly, sizeof(hourly), true, configuration, &error),
+          error.c_str());
+  require(esphome::osgp_meter::mbus::format_scheduled_read(configuration) == "hourly at minute 05",
+          "hourly schedule formatting");
+  require(esphome::osgp_meter::mbus::format_status_reads(configuration) == "every 60 min",
+          "separate status schedule");
+
+  const uint8_t weekly[] = {33, 12, 30, 2, 0, 0};
+  require(esphome::osgp_meter::mbus::parse_device_configuration(weekly, sizeof(weekly), true, configuration, &error),
+          error.c_str());
+  require(esphome::osgp_meter::mbus::format_scheduled_read(configuration) == "weekly on Monday at 12:30",
+          "weekly schedule formatting");
+
+  const uint8_t monthly[] = {0, 1, 2, 3, 0, 0};
+  require(esphome::osgp_meter::mbus::parse_device_configuration(monthly, sizeof(monthly), true, configuration, &error),
+          error.c_str());
+  require(esphome::osgp_meter::mbus::format_scheduled_read(configuration) == "monthly on day 1 at 01:02",
+          "monthly schedule formatting");
+
+  const uint8_t disabled[] = {39, 0, 0, 2, 0, 0};
+  require(esphome::osgp_meter::mbus::parse_device_configuration(disabled, sizeof(disabled), true, configuration,
+                                                                &error),
+          error.c_str());
+  require(esphome::osgp_meter::mbus::format_scheduled_read(configuration) == "never", "disabled schedule");
+
+  const uint8_t invalid[] = {31, 0, 0, 2, 0, 0};
+  require(!esphome::osgp_meter::mbus::parse_device_configuration(invalid, sizeof(invalid), true, configuration,
+                                                                 &error),
+          "invalid weekly day");
+
+  uint16_t poll_rate = 0;
+  const uint8_t poll_rate_data[] = {0x3C, 0x00};
+  require(esphome::osgp_meter::mbus::parse_load_profile_poll_rate(poll_rate_data, sizeof(poll_rate_data), true,
+                                                                  poll_rate, &error),
+          error.c_str());
+  require(poll_rate == 60, "ET34 poll rate");
+  require(!esphome::osgp_meter::mbus::parse_load_profile_poll_rate(poll_rate_data, 1, true, poll_rate, &error),
+          "truncated ET34 poll rate");
+}
+
+void test_primary_load_profile_diagnostics() {
+  std::vector<uint8_t> header(41, 0);
+  header[0] = 100;
+  header[1] = 0;
+  header[2] = 41;
+  header[3] = 2;
+  header[13] = 2;
+  header[14] = 1;
+  header[29] = 4;
+  header[30] = 15;
+
+  PrimaryLoadProfileLayout layout;
+  std::string error;
+  require(esphome::osgp_meter::mbus::parse_primary_load_profile_layout(header.data(), header.size(), true, layout,
+                                                                       &error),
+          error.c_str());
+  require(layout.table_length == 100, "ET42 table length");
+  require(layout.source_offset == 50, "ET42 source offset");
+  require(layout.channel_count == 4, "ET42 channel count");
+  require(layout.interval_minutes == 15, "ET42 interval");
+
+  const uint8_t sources[] = {
+      0x01, 0x40,  // slot 1, MDT 1
+      0x03, 0x42,  // slot 3, MDT 3
+      0x01, 0x40,  // slot 1, MDT 1 on another channel
+      0x05, 0x40,  // slot 1, MDT 5
+  };
+  std::vector<PrimaryLoadProfileChannel> channels;
+  require(esphome::osgp_meter::mbus::find_primary_load_profile_channels(sources, sizeof(sources), true, 1, channels,
+                                                                        &error),
+          error.c_str());
+  require(channels == std::vector<PrimaryLoadProfileChannel>({{0, 1}, {2, 1}, {3, 5}}),
+          "slot 1 channel and MDT matching");
+  require(esphome::osgp_meter::mbus::find_primary_load_profile_channels(sources, sizeof(sources), true, 3, channels,
+                                                                        &error),
+          error.c_str());
+  require(channels == std::vector<PrimaryLoadProfileChannel>({{1, 3}}), "slot 3 channel and MDT matching");
+  require(esphome::osgp_meter::mbus::format_primary_load_profile(15, 60, channels) ==
+              "channels=1:MDT3; interval=15 min; poll=60 min",
+          "configured load-profile formatting");
+  channels.clear();
+  require(esphome::osgp_meter::mbus::format_primary_load_profile(84, 0, channels) ==
+              "no M-Bus channels; interval=24 h; poll=every interval",
+          "unconfigured load-profile formatting");
+
+  header[0] = 52;
+  require(!esphome::osgp_meter::mbus::parse_primary_load_profile_layout(header.data(), header.size(), true, layout,
+                                                                        &error),
+          "ET42 source range beyond table");
+  require(!esphome::osgp_meter::mbus::find_primary_load_profile_channels(sources, sizeof(sources) - 1, true, 1,
+                                                                         channels, &error),
+          "odd ET42 source list");
+}
+
+void test_diagnostic_change_detection() {
+  std::string previous;
+  require(esphome::osgp_meter::mbus::replace_diagnostic_summary_if_changed(previous, "daily"),
+          "first diagnostic summary");
+  require(!esphome::osgp_meter::mbus::replace_diagnostic_summary_if_changed(previous, "daily"),
+          "unchanged diagnostic summary");
+  require(esphome::osgp_meter::mbus::replace_diagnostic_summary_if_changed(previous, "hourly"),
+          "changed diagnostic summary");
+}
+
 }  // namespace
 
 int main() {
@@ -175,6 +294,9 @@ int main() {
   test_malformed_and_security_data();
   test_fixed_data();
   test_matching_and_ring_helpers();
+  test_device_configuration_diagnostics();
+  test_primary_load_profile_diagnostics();
+  test_diagnostic_change_detection();
   std::cout << "M-Bus parser tests passed\n";
   return 0;
 }

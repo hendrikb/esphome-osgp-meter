@@ -114,7 +114,10 @@ Some OSGP electricity meters act as an M-Bus relay for other household meters. S
 
 If the meter knows about the connected M-Bus meters, this ESPHome component can discover configured devices by their eight-digit M-Bus serial
 number and read RK-accessible scheduled data from ET16 and the ET45 circular
-log. It reads at regular intervals and does not issue on-demand reads, as this would require a different access key (MAK).
+log. `mbus.update_interval` controls how often the component scans ET45; it
+does not make the electricity meter physically poll a subordinate meter. The
+component does not issue on-demand reads because EP19 requires MAK/MK-level
+access rather than the read-only key (RK).
 
 Use [example_nes_meter_mbus.yaml](example_nes_meter_mbus.yaml) for a complete
 water and heat setup. Keep household identifiers in the ignored
@@ -151,9 +154,33 @@ Assistant dashboards and long-term statistics. See the
 [Home Assistant sensor classes](https://developers.home-assistant.io/docs/core/entity/sensor/).
 
 M-Bus timestamps describe when the electricity meter collected each scheduled
-read. Collection frequency is configured in the
-meter and can be much slower than `mbus.update_interval`; use `last_read` to
-judge freshness.
+read. Collection frequency is configured in the meter and can be much slower
+than `mbus.update_interval`; use `last_read` to judge freshness. An ET14 status
+of `active` reports the subordinate meter's communication/commissioning state,
+not the freshness of its measurement data. Similarly, an unavailable water
+flow sensor means the stored telegram contains no matching flow record; the
+component does not derive flow from changes in a daily total.
+
+At startup the component reads the RK-accessible ET13, ET34, and primary ET42
+configuration and writes one INFO summary per configured device:
+
+```text
+M-Bus configuration: serial=12345678 slot=1 handle=1 schedule="daily at 00:00" status_reads="every 1 min" primary_load_profile="no M-Bus channels; interval=15 min; poll=60 min"
+```
+
+The summary reports the scheduled billing read, separate status-read cadence,
+primary load-profile interval, physical M-Bus polling interval, and any matching
+M-Bus channel/MDT identifiers. Configuration is checked again according to
+`static_info_interval`, but INFO is emitted again only if the summary changes.
+Malformed or inaccessible optional diagnostic tables are visible at DEBUG and
+do not interrupt electricity or scheduled M-Bus reads.
+
+When the summary says `no M-Bus channels`, no faster primary load-profile data
+is currently available to read. Ask the meter supplier to increase the ET13
+scheduled billing-read frequency, or to assign the subordinate meter to M-Bus
+channels in the primary load profile and configure a suitable physical polling
+interval. These changes cannot be made with the component's read-only RK; it
+does not invoke EP19 or write meter configuration.
 
 For initial discovery, temporarily set `dump_records: true` and use a DEBUG
 logger. Each record is logged with DIF, VIF, function, storage, tariff, and

@@ -1,6 +1,7 @@
 #include "osgp_meter.h"
 
 #include <algorithm>
+#include <cstdio>
 
 #include "esphome/core/log.h"
 #include "osgp_protocol_constants.h"
@@ -127,12 +128,14 @@ bool OSGPMeter::consume_partial_table_reply_(std::vector<uint8_t> &data, const c
 }
 
 bool OSGPMeter::parse_mbus_et11_(const std::vector<uint8_t> &data) {
-  if (data.size() < 7) {
+  if (data.size() < 14) {
     return false;
   }
   this->mbus_device_count_ = data[0];
+  this->mbus_config_entry_size_ = data[1];
   this->mbus_status_entry_size_ = data[2];
   this->mbus_data_entry_size_ = read_u16(data.data() + 5, this->byte_order_little_);
+  this->mbus_config2_entry_size_ = data[13];
   if (this->mbus_device_count_ < 4 || this->mbus_status_entry_size_ < 6 || this->mbus_data_entry_size_ < 24) {
     ESP_LOGD(TAG, "Unsupported ET11 dimensions: devices=%u status=%u data=%u",
              static_cast<unsigned>(this->mbus_device_count_), static_cast<unsigned>(this->mbus_status_entry_size_),
@@ -190,6 +193,89 @@ bool OSGPMeter::parse_mbus_et14_entry_(uint8_t slot, const std::vector<uint8_t> 
     }
   }
   return true;
+}
+
+bool OSGPMeter::parse_mbus_et13_entry_(MBusDevice &device, const std::vector<uint8_t> &data) {
+  mbus::DeviceConfiguration configuration;
+  std::string error;
+  if (!mbus::parse_device_configuration(data.data(), data.size(), this->byte_order_little_, configuration, &error)) {
+    ESP_LOGD(TAG, "M-Bus ET13 serial=%s ignored: %s", device.serial_number.c_str(), error.c_str());
+    return false;
+  }
+  device.diagnostic_configuration = configuration;
+  device.diagnostic_configuration_valid = true;
+  return true;
+}
+
+bool OSGPMeter::parse_mbus_et34_entry_(MBusDevice &device, const std::vector<uint8_t> &data) {
+  uint16_t poll_rate_minutes = 0;
+  std::string error;
+  if (!mbus::parse_load_profile_poll_rate(data.data(), data.size(), this->byte_order_little_, poll_rate_minutes,
+                                          &error)) {
+    ESP_LOGD(TAG, "M-Bus ET34 serial=%s ignored: %s", device.serial_number.c_str(), error.c_str());
+    return false;
+  }
+  device.diagnostic_load_profile_poll_minutes = poll_rate_minutes;
+  device.diagnostic_load_profile_poll_valid = true;
+  return true;
+}
+
+bool OSGPMeter::parse_mbus_et42_header_(const std::vector<uint8_t> &data) {
+  mbus::PrimaryLoadProfileLayout layout;
+  std::string error;
+  if (!mbus::parse_primary_load_profile_layout(data.data(), data.size(), this->byte_order_little_, layout, &error)) {
+    ESP_LOGD(TAG, "M-Bus ET42 fixed section ignored: %s", error.c_str());
+    return false;
+  }
+  this->mbus_primary_load_profile_layout_ = layout;
+  this->mbus_primary_load_profile_valid_ = false;
+  if (layout.channel_count == 0) {
+    for (MBusDevice &device : this->mbus_devices_)
+      device.diagnostic_primary_channels.clear();
+    this->mbus_primary_load_profile_valid_ = true;
+  }
+  return true;
+}
+
+bool OSGPMeter::parse_mbus_et42_sources_(const std::vector<uint8_t> &data) {
+  std::vector<std::vector<mbus::PrimaryLoadProfileChannel>> device_channels(this->mbus_devices_.size());
+  for (size_t i = 0; i < this->mbus_devices_.size(); i++) {
+    const MBusDevice &device = this->mbus_devices_[i];
+    if (!device.found || device.slot < 1 || device.slot > 4)
+      continue;
+    std::string error;
+    if (!mbus::find_primary_load_profile_channels(data.data(), data.size(), this->byte_order_little_, device.slot,
+                                                  device_channels[i], &error)) {
+      ESP_LOGD(TAG, "M-Bus ET42 sources ignored: %s", error.c_str());
+      return false;
+    }
+  }
+  for (size_t i = 0; i < this->mbus_devices_.size(); i++)
+    this->mbus_devices_[i].diagnostic_primary_channels = std::move(device_channels[i]);
+  this->mbus_primary_load_profile_valid_ = true;
+  return true;
+}
+
+void OSGPMeter::log_mbus_diagnostics_() {
+  for (MBusDevice &device : this->mbus_devices_) {
+    if (!device.found || !device.diagnostic_configuration_valid ||
+        !device.diagnostic_load_profile_poll_valid || !this->mbus_primary_load_profile_valid_) {
+      ESP_LOGD(TAG, "M-Bus diagnostics incomplete for serial=%s", device.serial_number.c_str());
+      continue;
+    }
+    const std::string schedule = mbus::format_scheduled_read(device.diagnostic_configuration);
+    const std::string status_reads = mbus::format_status_reads(device.diagnostic_configuration);
+    const std::string load_profile = mbus::format_primary_load_profile(
+        this->mbus_primary_load_profile_layout_.interval_minutes, device.diagnostic_load_profile_poll_minutes,
+        device.diagnostic_primary_channels);
+    char prefix[128];
+    std::snprintf(prefix, sizeof(prefix), "serial=%s slot=%u handle=%u schedule=\"%s\" status_reads=\"%s\" ",
+                  device.serial_number.c_str(), static_cast<unsigned>(device.slot),
+                  static_cast<unsigned>(device.handle), schedule.c_str(), status_reads.c_str());
+    const std::string summary = std::string(prefix) + "primary_load_profile=\"" + load_profile + '"';
+    if (mbus::replace_diagnostic_summary_if_changed(device.diagnostic_summary, summary))
+      ESP_LOGI(TAG, "M-Bus configuration: %s", summary.c_str());
+  }
 }
 
 bool OSGPMeter::parse_mbus_et36_(const std::vector<uint8_t> &data) {
@@ -379,8 +465,22 @@ bool OSGPMeter::all_mbus_cycle_devices_found_() const {
 }
 
 void OSGPMeter::finish_mbus_cycle_(uint32_t now) {
+  const bool diagnostics_due = this->last_mbus_diagnostics_ms_ == 0 ||
+                               (this->static_info_interval_ms_ != 0 &&
+                                now - this->last_mbus_diagnostics_ms_ >= this->static_info_interval_ms_);
+  if (!this->mbus_diagnostics_active_ && this->mbus_dimensions_loaded_ && diagnostics_due) {
+    this->mbus_diagnostics_active_ = true;
+    this->session_state_ = SessionState::MBUS_DIAGNOSTICS_PREPARE;
+    return;
+  }
+  this->mbus_diagnostics_active_ = false;
   this->next_mbus_update_ms_ = now + this->mbus_update_interval_ms_;
   this->session_state_ = SessionState::CONNECTED_IDLE;
+}
+
+void OSGPMeter::finish_mbus_diagnostics_(uint32_t now) {
+  this->last_mbus_diagnostics_ms_ = now;
+  this->finish_mbus_cycle_(now);
 }
 
 void OSGPMeter::process_mbus_state_(uint32_t now) {
@@ -408,7 +508,7 @@ void OSGPMeter::process_mbus_state_(uint32_t now) {
       return;
 
     case SessionState::MBUS_READ_ET11: {
-      const StepResult step = read_partial(0x080B, 0, 7, "ReadET11");
+      const StepResult step = read_partial(0x080B, 0, 14, "ReadET11");
       if (step == StepResult::IN_PROGRESS)
         return;
       std::vector<uint8_t> data;
@@ -610,6 +710,110 @@ void OSGPMeter::process_mbus_state_(uint32_t now) {
       this->session_state_ = SessionState::MBUS_READ_ET45_ENTRY;
       return;
     }
+
+    case SessionState::MBUS_DIAGNOSTICS_PREPARE:
+      if (this->mbus_config_entry_size_ < 6 || this->mbus_config2_entry_size_ < 6) {
+        ESP_LOGD(TAG, "M-Bus diagnostics unavailable: ET11 configuration dimensions are too small");
+        this->finish_mbus_diagnostics_(now);
+        return;
+      }
+      this->mbus_primary_load_profile_valid_ = false;
+      for (MBusDevice &device : this->mbus_devices_) {
+        device.diagnostic_configuration_valid = false;
+        device.diagnostic_load_profile_poll_valid = false;
+        device.diagnostic_primary_channels.clear();
+      }
+      this->mbus_diagnostic_device_index_ = 0;
+      this->session_state_ = SessionState::MBUS_DIAGNOSTICS_READ_ET13;
+      return;
+
+    case SessionState::MBUS_DIAGNOSTICS_READ_ET13: {
+      while (this->mbus_diagnostic_device_index_ < this->mbus_devices_.size()) {
+        MBusDevice &device = this->mbus_devices_[this->mbus_diagnostic_device_index_];
+        if (device.found && device.slot >= 1 && device.slot <= 4)
+          break;
+        this->mbus_diagnostic_device_index_++;
+      }
+      if (this->mbus_diagnostic_device_index_ >= this->mbus_devices_.size()) {
+        this->mbus_diagnostic_device_index_ = 0;
+        this->session_state_ = SessionState::MBUS_DIAGNOSTICS_READ_ET34;
+        return;
+      }
+      MBusDevice &device = this->mbus_devices_[this->mbus_diagnostic_device_index_];
+      const uint32_t offset = static_cast<uint32_t>(device.slot - 1) * this->mbus_config_entry_size_;
+      const StepResult step = read_partial(0x080D, offset, 6, "ReadET13Entry");
+      if (step == StepResult::IN_PROGRESS)
+        return;
+      if (step == StepResult::SUCCESS) {
+        std::vector<uint8_t> data;
+        if (this->consume_partial_table_reply_(data, "ET13 entry"))
+          this->parse_mbus_et13_entry_(device, data);
+      }
+      this->mbus_diagnostic_device_index_++;
+      return;
+    }
+
+    case SessionState::MBUS_DIAGNOSTICS_READ_ET34: {
+      while (this->mbus_diagnostic_device_index_ < this->mbus_devices_.size()) {
+        MBusDevice &device = this->mbus_devices_[this->mbus_diagnostic_device_index_];
+        if (device.found && device.slot >= 1 && device.slot <= 4)
+          break;
+        this->mbus_diagnostic_device_index_++;
+      }
+      if (this->mbus_diagnostic_device_index_ >= this->mbus_devices_.size()) {
+        this->session_state_ = SessionState::MBUS_DIAGNOSTICS_READ_ET42_HEADER;
+        return;
+      }
+      MBusDevice &device = this->mbus_devices_[this->mbus_diagnostic_device_index_];
+      const uint32_t offset = static_cast<uint32_t>(device.slot - 1) * this->mbus_config2_entry_size_ + 4U;
+      const StepResult step = read_partial(0x0822, offset, 2, "ReadET34PollRate");
+      if (step == StepResult::IN_PROGRESS)
+        return;
+      if (step == StepResult::SUCCESS) {
+        std::vector<uint8_t> data;
+        if (this->consume_partial_table_reply_(data, "ET34 poll rate"))
+          this->parse_mbus_et34_entry_(device, data);
+      }
+      this->mbus_diagnostic_device_index_++;
+      return;
+    }
+
+    case SessionState::MBUS_DIAGNOSTICS_READ_ET42_HEADER: {
+      const StepResult step = read_partial(0x082A, 0, 41, "ReadET42Header");
+      if (step == StepResult::IN_PROGRESS)
+        return;
+      std::vector<uint8_t> data;
+      if (step == StepResult::FAILURE || !this->consume_partial_table_reply_(data, "ET42 header") ||
+          !this->parse_mbus_et42_header_(data)) {
+        this->finish_mbus_diagnostics_(now);
+        return;
+      }
+      this->session_state_ = this->mbus_primary_load_profile_layout_.channel_count == 0
+                                 ? SessionState::MBUS_DIAGNOSTICS_LOG
+                                 : SessionState::MBUS_DIAGNOSTICS_READ_ET42_SOURCES;
+      return;
+    }
+
+    case SessionState::MBUS_DIAGNOSTICS_READ_ET42_SOURCES: {
+      const uint16_t count = static_cast<uint16_t>(2U * this->mbus_primary_load_profile_layout_.channel_count);
+      const StepResult step = read_partial(0x082A, this->mbus_primary_load_profile_layout_.source_offset, count,
+                                           "ReadET42Sources");
+      if (step == StepResult::IN_PROGRESS)
+        return;
+      std::vector<uint8_t> data;
+      if (step == StepResult::FAILURE || !this->consume_partial_table_reply_(data, "ET42 sources") ||
+          !this->parse_mbus_et42_sources_(data)) {
+        this->finish_mbus_diagnostics_(now);
+        return;
+      }
+      this->session_state_ = SessionState::MBUS_DIAGNOSTICS_LOG;
+      return;
+    }
+
+    case SessionState::MBUS_DIAGNOSTICS_LOG:
+      this->log_mbus_diagnostics_();
+      this->finish_mbus_diagnostics_(now);
+      return;
 
     default:
       this->finish_mbus_cycle_(now);
