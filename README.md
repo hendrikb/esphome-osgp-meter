@@ -41,6 +41,7 @@ Put the following directive into your ESPhome device configuration to load the c
 external_components:
   - source: github://hendrikb/esphome-osgp-meter@main
     components: [osgp_meter]
+    refresh: always
 ```
 
 Right after loading the component you can continue configuring it to your needs.

@@ -26,6 +26,7 @@ ota:
 external_components:
   - source: github://hendrikb/esphome-osgp-meter@main
     components: [osgp_meter]
+    refresh: always
 
 logger:
   level: INFO
